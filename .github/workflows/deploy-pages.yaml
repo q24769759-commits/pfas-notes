@@ -1,0 +1,83 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - v5
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Quartz plugins
+        run: |
+          python3 - << 'EOF'
+          import json, subprocess, os
+
+          with open('quartz.lock.json') as f:
+              lock = json.load(f)
+
+          os.makedirs('.quartz/plugins', exist_ok=True)
+
+          for name, info in lock['plugins'].items():
+              dest = f'.quartz/plugins/{name}'
+              if os.path.exists(dest):
+                  print(f'Skipping {name}')
+                  continue
+              url = info['resolved']
+              print(f'Cloning {name}...')
+              result = subprocess.run(
+                  ['git', 'clone', '--depth=1', url, dest],
+                  capture_output=True, text=True
+              )
+              if result.returncode != 0:
+                  print(f'Warning: {name}: {result.stderr}')
+
+          print('Done!')
+          EOF
+
+      - name: Create plugins index
+        run: |
+          echo 'export const CustomOgImagesEmitterName = "CustomOgImages";' > .quartz/plugins/index.ts
+          echo 'export type ContentDetails = { slug: string; filePath: string; title: string; links: string[]; tags: string[]; content: string; richContent?: string; date?: Date; description?: string; };' >> .quartz/plugins/index.ts
+
+      - name: Build Quartz
+        run: npx quartz build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
